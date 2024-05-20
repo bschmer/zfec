@@ -25,6 +25,7 @@ def main():
     parser.add_argument('-v', '--verbose', help='print out messages about progress', action='store_true')
     parser.add_argument('-f', '--force', help='overwrite any file which already in place of the output file', action='store_true')
     parser.add_argument('-V', '--version', help='print out version number and exit', action='store_true')
+    parser.add_argument('-a', '--verifyall', help='verify all shards rather than just the first k', action='store_true')
     args = parser.parse_args()
 
     if len(args.sharefiles) < 2:
@@ -50,7 +51,7 @@ def main():
     for fn in args.sharefiles:
         sharefs.append(open(fn, 'rb'))
     try:
-        filefec.decode_from_files(outf, sharefs, args.verbose)
+        filefec.decode_from_files(outf, sharefs, args.verbose, verifyall=args.verifyall)
     except filefec.InsufficientShareFilesError as e:
         print(str(e))
         return 3

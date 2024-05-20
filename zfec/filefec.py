@@ -1,6 +1,11 @@
 from __future__ import print_function
 import array, os, struct
+import itertools
 from base64 import b32encode
+import hashlib
+import pdb
+import random
+import pprint
 
 import zfec
 from zfec import easyfec
@@ -198,12 +203,14 @@ def encode_to_files(inf, fsize, dirname, prefix, k, m, suffix=".fec", overwrite=
 
     fns = []
     fs = []
+    dirname = itertools.cycle(dirname.split(' '))
+
     got_error = False
     try:
         for shnum in range(m):
             hdr = _build_header(m, k, padbytes, shnum)
 
-            fn = os.path.join(dirname, format % (prefix, shnum, m, suffix,))
+            fn = os.path.join(next(dirname), format % (prefix, shnum, m, suffix,))
             if verbose:
                 print("Creating share file %r..." % (fn,))
             if overwrite:
@@ -261,7 +268,16 @@ def encode_to_files(inf, fsize, dirname, prefix, k, m, suffix=".fec", overwrite=
 # Thanks.
 MILLION_BYTES=10**6
 
-def decode_from_files(outf, infiles, verbose=False):
+def printbad(badchunks):
+    """
+    Print the list of bad chunks.  At some point, condense the lists to ranges.
+    """
+    if badchunks:
+        print('Bad blocks detected.  Format: shardnum: list of bad blocks')
+        for k, v in sorted(badchunks.items()):
+            print(f'{k}: {",".join([str(x) for x in v])}')
+
+def decode_from_files(outf, infiles, verbose=False, verifyall=True):
     """
     Decode from the first k files in infiles, writing the results to outf.
     """
@@ -290,18 +306,57 @@ def decode_from_files(outf, infiles, verbose=False):
         infs.append(f)
         shnums.append(shnum)
 
-        if len(infs) == k:
+        if not verifyall and len(infs) == k:
             break
 
     dec = easyfec.Decoder(k, m)
 
+    badchunks = dict()
+    # TODO: Save the input file offset for debugging if a corruption is detected
+    iteration = -1
     while True:
+        iteration += 1
         chunks = [ inf.read(CHUNKSIZE) for inf in infs ]
         if [ch for ch in chunks if len(ch) != len(chunks[-1])]:
             raise CorruptedShareFilesError("Share files were corrupted -- all share files are required to be the same length, but they weren't.")
 
         if len(chunks[-1]) > 0:
-            resultdata = dec.decode(chunks, shnums, padlen=0)
+            _resultdata = []
+            sums = {}
+            #print(iteration, m, k, type(m), type(k))
+            for offset in range(0, len(infs), k):
+            #for offset in range(0, m-k+1, k):
+                if offset > m - k:
+                    offset = m - k
+                _resultdata.append(dec.decode(chunks[offset:offset + k], shnums[offset:offset + k], padlen=0))
+                thesum = hashlib.md5(_resultdata[-1]).hexdigest()
+                if thesum not in sums:
+                    sums[thesum] = []
+                sums[thesum].append(shnums[offset:offset+k])
+            if len(sums.keys()) > 1:
+                bestsum = sorted(sums.items(), key=lambda x: len(x[1]), reverse=True)[0][0]
+                goodshards = list(set(itertools.chain.from_iterable(sums.pop(bestsum))))
+                badshards = []
+                baseshards = goodshards[:k-1]
+                for _k, _v in sums.items():
+                    for shard in list(set(itertools.chain.from_iterable(_v))):
+                        curshards = baseshards + [shard]
+                        offsets = [shnums.index(x) for x in curshards]
+                        curchunks = []
+                        curshards = []
+                        for x in offsets:
+                            curchunks.append(chunks[x])
+                            curshards.append(shnums[x])
+                        cursum = hashlib.md5(dec.decode(curchunks, curshards, padlen=0)).hexdigest()
+                        if cursum == bestsum:
+                            goodshards.append(shard)
+                        else:
+                            badshards.append(shard)
+                for shard in badshards:
+                    if shard not in badchunks:
+                        badchunks[shard] = []
+                    badchunks[shard].append(iteration)
+            resultdata = _resultdata[0]
             outf.write(resultdata)
             byteswritten += len(resultdata)
             if verbose:
@@ -310,7 +365,10 @@ def decode_from_files(outf, infiles, verbose=False):
         else:
             if padlen > 0:
                 outf.truncate(byteswritten - padlen)
+            printbad(badchunks)
+
             return # Done.
+    printbad(badchunks)
     if verbose:
         print()
         print("Done!")
