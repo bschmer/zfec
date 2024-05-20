@@ -203,6 +203,8 @@ def encode_to_files(inf, fsize, dirname, prefix, k, m, suffix=".fec", overwrite=
 
     fns = []
     fs = []
+    if dirname:
+        prefix = prefix.split('/')[-1]
     dirname = itertools.cycle(dirname.split(' '))
 
     got_error = False
